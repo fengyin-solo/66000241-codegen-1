@@ -46,6 +46,69 @@ export interface SubscriptionConfig {
   enabled: boolean
 }
 
+// 采集方案中单个节点的参数
+export interface CollectionNodeConfig {
+  nodeId: string
+  samplingInterval: number
+  publishingInterval: number
+  queueSize: number
+}
+
+// 可复用的采集方案
+export interface CollectionScheme {
+  id: string
+  name: string
+  description?: string
+  nodes: CollectionNodeConfig[]
+  active: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+// 校验错误：哪个节点的哪一项超出标准
+export interface CollectionValidationError {
+  nodeId: string | null
+  nodeName: string | null
+  field: 'samplingInterval' | 'publishingInterval' | 'queueSize' | 'nodeId' | 'name' | 'nodes'
+  message: string
+}
+
+// 方案启用时单节点反馈
+export interface SchemeNodeResult {
+  nodeId: string
+  nodeName: string | null
+  status: 'success' | 'pending'
+  message: string
+}
+
+// 方案启用结果
+export interface SchemeActivationResult {
+  schemeId: string
+  schemeName: string
+  active: boolean
+  results: SchemeNodeResult[]
+}
+
+// 节点当前生效参数（节点详情展示参数来源）
+export interface EffectiveSubscription {
+  nodeId: string
+  samplingInterval: number | null
+  publishingInterval: number | null
+  queueSize: number | null
+  source: 'scheme' | 'manual' | null
+  sourceSchemeId: string | null
+  sourceSchemeName: string | null
+  pending: boolean
+  subscribed: boolean
+}
+
+// 参数取值范围
+export interface CollectionLimits {
+  samplingInterval: { min: number; max: number; hint: string }
+  publishingInterval: { min: number; max: number; hint: string }
+  queueSize: { min: number; max: number; hint: string }
+}
+
 // 历史数据点
 export interface HistoryDataPoint {
   timestamp: number

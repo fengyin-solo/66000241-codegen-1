@@ -26,7 +26,15 @@
           </el-icon>
           <span class="node-label">{{ data.name }}</span>
           <el-tag
-            v-if="data.type === 'Variable' && data.quality"
+            v-if="data.type === 'Variable' && store.unreachableNodes.has(data.id)"
+            type="danger"
+            size="small"
+            class="ml-2"
+          >
+            连接异常
+          </el-tag>
+          <el-tag
+            v-else-if="data.type === 'Variable' && data.quality"
             :type="data.quality === 'Good' ? 'success' : data.quality === 'Bad' ? 'danger' : 'warning'"
             size="small"
             class="ml-2"
@@ -54,13 +62,16 @@
           {{ store.selectedNode.dataType }}
         </el-descriptions-item>
         <el-descriptions-item v-if="store.selectedNode.value !== undefined" label="当前值">
-          <span class="text-green-400 font-mono">
-            {{ store.selectedNode.value }}{{ store.selectedNode.unit ? ' ' + store.selectedNode.unit : '' }}
+          <span :class="reachable ? 'text-green-400 font-mono' : 'text-red-400 font-mono'">
+            <template v-if="reachable">
+              {{ store.selectedNode.value }}{{ store.selectedNode.unit ? ' ' + store.selectedNode.unit : '' }}
+            </template>
+            <template v-else>-- 连接异常 --</template>
           </span>
         </el-descriptions-item>
         <el-descriptions-item v-if="store.selectedNode.quality" label="质量码">
           <el-tag
-            :type="store.selectedNode.quality === 'Good' ? 'success' : 'danger'"
+            :type="store.selectedNode.quality === 'Good' ? 'success' : store.selectedNode.quality === 'Bad' ? 'danger' : 'warning'"
             size="small"
           >
             {{ store.selectedNode.quality }}
@@ -71,6 +82,51 @@
         </el-descriptions-item>
       </el-descriptions>
 
+      <!-- 连接状态（可模拟断连/恢复，用于演示待生效） -->
+      <div v-if="store.selectedNode.type === 'Variable'" class="connection-row">
+        <span class="conn-label">连接状态：</span>
+        <el-tag :type="reachable ? 'success' : 'danger'" size="small">
+          {{ reachable ? '连接正常' : '连接异常' }}
+        </el-tag>
+        <el-button
+          size="small"
+          text
+          :type="reachable ? 'danger' : 'success'"
+          @click="toggleReachability"
+        >
+          {{ reachable ? '模拟断连' : '模拟恢复' }}
+        </el-button>
+      </div>
+
+      <!-- 当前采集参数及来源（配置与订阅共用同一份参数） -->
+      <div v-if="store.selectedNode.type === 'Variable' && effective" class="effective-panel">
+        <div class="effective-header">
+          <span class="effective-title">当前采集参数</span>
+          <el-tag v-if="effective.source === 'scheme'" type="success" size="small">
+            来自采集方案
+          </el-tag>
+          <el-tag v-else type="info" size="small">单点订阅</el-tag>
+          <el-tag v-if="effective.pending" type="warning" size="small">待生效</el-tag>
+        </div>
+        <el-descriptions :column="1" size="small" border class="dark-descriptions">
+          <el-descriptions-item label="参数来源">
+            <span v-if="effective.source === 'scheme'" class="text-cyan-300">
+              采集方案「{{ effective.sourceSchemeName }}」
+            </span>
+            <span v-else class="text-slate-300">单点订阅（默认参数）</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="采样周期">
+            {{ effective.samplingInterval }} ms
+          </el-descriptions-item>
+          <el-descriptions-item label="发布周期">
+            {{ effective.publishingInterval }} ms
+          </el-descriptions-item>
+          <el-descriptions-item label="队列上限">
+            {{ effective.queueSize }}
+          </el-descriptions-item>
+        </el-descriptions>
+      </div>
+
       <div class="mt-3 flex gap-2">
         <el-button
           v-if="store.selectedNode.type === 'Variable'"
@@ -78,7 +134,7 @@
           size="small"
           @click="handleSubscribe"
         >
-          {{ isSubscribed ? '取消订阅' : '订阅' }}
+          {{ manualSubscribed ? '取消单点订阅' : '单点订阅' }}
         </el-button>
         <el-button
           v-if="store.selectedNode.type === 'Variable'"
@@ -89,6 +145,10 @@
           读取
         </el-button>
       </div>
+      <p v-if="effective?.source === 'scheme'" class="source-hint">
+        该节点当前由生效中的采集方案「{{ effective.sourceSchemeName }}」统一采集，
+        单点订阅入口保持可用但不改变方案参数；停用方案后单点订阅按默认参数继续。
+      </p>
     </div>
   </div>
 </template>
@@ -107,29 +167,59 @@ const treeProps = {
   label: 'name'
 }
 
-const isSubscribed = computed(() => {
-  if (!store.selectedNode) return false
-  return store.subscriptions.has(store.selectedNode.id)
-})
+const reachable = computed(() =>
+  store.selectedNode ? store.isNodeReachable(store.selectedNode.id) : true
+)
+
+// 当前节点生效参数（含来源：采集方案 / 单点订阅）
+const effective = computed(() =>
+  store.selectedNode ? store.getEffectiveSubscription(store.selectedNode.id) : null
+)
+
+// 原有单点订阅入口：只表示手动订阅状态，方案覆盖不改变其行为
+const manualSubscribed = computed(() =>
+  store.selectedNode ? store.manualSubscriptions.has(store.selectedNode.id) : false
+)
 
 function handleNodeClick(data: OPCUANode) {
   store.selectNode(data)
 }
 
+// 原有单点订阅入口，保持原行为
 function handleSubscribe() {
   if (!store.selectedNode) return
-  if (isSubscribed.value) {
+  if (manualSubscribed.value) {
     store.removeSubscription(store.selectedNode.id)
-    ElMessage.success(`已取消订阅: ${store.selectedNode.name}`)
+    ElMessage.success(`已取消单点订阅: ${store.selectedNode.name}`)
   } else {
     store.addSubscription(store.selectedNode.id)
-    ElMessage.success(`已订阅: ${store.selectedNode.name}`)
+    ElMessage.success(`已单点订阅: ${store.selectedNode.name}`)
   }
 }
 
 function handleReadValue() {
   if (!store.selectedNode) return
+  if (!reachable.value) {
+    ElMessage.error(`${store.selectedNode.name} 连接异常，无法读取`)
+    return
+  }
   ElMessage.success(`${store.selectedNode.name} = ${store.selectedNode.value} ${store.selectedNode.unit || ''}`)
+}
+
+// 模拟节点连接异常/恢复
+function toggleReachability() {
+  if (!store.selectedNode) return
+  const node = store.selectedNode
+  if (reachable.value) {
+    store.setNodeReachable(node.id, false)
+    ElMessage.warning(`已模拟节点 ${node.name} 连接异常`)
+  } else {
+    const recoveredPending = store.setNodeReachable(node.id, true)
+    ElMessage.success(`节点 ${node.name} 连接已恢复`)
+    if (recoveredPending.length > 0) {
+      ElMessage.success(`节点 ${node.name} 的待生效采集配置已自动补发`)
+    }
+  }
 }
 </script>
 
@@ -170,6 +260,49 @@ function handleReadValue() {
 
 .node-detail-panel {
   padding: 8px 0;
+}
+
+.connection-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.conn-label {
+  color: #94a3b8;
+}
+
+.effective-panel {
+  margin-top: 10px;
+  padding: 8px;
+  background: rgba(6, 182, 212, 0.06);
+  border: 1px solid rgba(6, 182, 212, 0.25);
+  border-radius: 6px;
+}
+
+.effective-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.effective-title {
+  font-size: 12px;
+  font-weight: bold;
+  color: #67e8f9;
+}
+
+.source-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #7dd3fc;
+  line-height: 1.6;
+  background: rgba(6, 182, 212, 0.08);
+  border-radius: 4px;
+  padding: 6px 8px;
 }
 
 :deep(.el-tree) {

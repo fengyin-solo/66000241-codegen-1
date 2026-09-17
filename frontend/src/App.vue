@@ -7,6 +7,19 @@
         <h1 class="app-title">OPC-UA 工业节点浏览与数据采集</h1>
       </div>
       <div class="header-right">
+        <!-- 视图切换：实时监控 / 采集方案 -->
+        <el-radio-group v-model="currentView" size="small" class="view-switcher">
+          <el-radio-button value="dashboard">实时监控</el-radio-button>
+          <el-radio-button value="schemes">
+            采集方案
+            <el-badge
+              v-if="store.pendingNodeList.length > 0"
+              :value="store.pendingNodeList.length"
+              class="pending-badge"
+            />
+          </el-radio-button>
+        </el-radio-group>
+
         <el-badge :value="store.activeAlarmsCount" :max="99" class="alarm-badge">
           <el-icon :size="20" class="text-yellow-400"><Bell /></el-icon>
         </el-badge>
@@ -35,9 +48,10 @@
         <NodeTree />
       </aside>
 
-      <!-- 中央区域: 仪表盘 -->
+      <!-- 中央区域: 仪表盘 / 采集方案 -->
       <main class="center-panel">
-        <DataDashboard />
+        <DataDashboard v-if="currentView === 'dashboard'" />
+        <CollectionSchemePanel v-else />
       </main>
 
       <!-- 右侧面板: 报警列表 -->
@@ -110,10 +124,12 @@ import { ElMessage } from 'element-plus'
 import { useOpcuaStore } from './store/opcua'
 import NodeTree from './components/NodeTree.vue'
 import DataDashboard from './components/DataDashboard.vue'
+import CollectionSchemePanel from './components/CollectionSchemePanel.vue'
 import type { AlarmEvent } from './types'
 
 const store = useOpcuaStore()
 const updateTimer = ref<number | null>(null)
+const currentView = ref<'dashboard' | 'schemes'>('dashboard')
 
 const criticalCount = computed(() =>
   store.alarms.filter(a => a.severity === 'Critical' && !a.acknowledged).length
@@ -137,6 +153,14 @@ function toggleConnection() {
 function startSimulation() {
   updateTimer.value = window.setInterval(() => {
     store.simulateDataUpdate()
+    // 连接抖动/恢复检测：恢复的待生效节点自动补发
+    const event = store.reconcileConnections()
+    event.flapped.forEach(id => {
+      ElMessage.warning(`节点 ${store.nodeNameOf(id) || id} 连接异常`)
+    })
+    event.recoveredPending.forEach(id => {
+      ElMessage.success(`节点 ${store.nodeNameOf(id) || id} 连接恢复，采集配置已自动补发生效`)
+    })
   }, 1000)
 }
 
@@ -165,6 +189,8 @@ function formatTime(timestamp: number): string {
 }
 
 onMounted(() => {
+  // 先恢复持久化的采集方案，再建立连接并重新应用生效方案（刷新后保留）
+  store.restore()
   store.connect()
   startSimulation()
 })
@@ -214,6 +240,14 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 16px;
+}
+
+.view-switcher {
+  margin-right: 4px;
+}
+
+.pending-badge {
+  margin-left: 6px;
 }
 
 .status-tag {
