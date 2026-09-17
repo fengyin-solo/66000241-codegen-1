@@ -7,6 +7,15 @@
         <h1 class="app-title">OPC-UA 工业节点浏览与数据采集</h1>
       </div>
       <div class="header-right">
+        <el-badge :value="store.pendingNodeCount" :hidden="store.pendingNodeCount === 0" class="pending-badge">
+          <el-button type="primary" plain size="small" @click="planDialogVisible = true">
+            <el-icon class="mr-1"><SetUp /></el-icon>
+            采集方案
+            <el-tag v-if="store.enabledPlanCount > 0" type="success" size="small" effect="dark" class="ml-1">
+              {{ store.enabledPlanCount }} 份生效中
+            </el-tag>
+          </el-button>
+        </el-badge>
         <el-badge :value="store.activeAlarmsCount" :max="99" class="alarm-badge">
           <el-icon :size="20" class="text-yellow-400"><Bell /></el-icon>
         </el-badge>
@@ -100,20 +109,25 @@
         </div>
       </aside>
     </div>
+
+    <!-- 节点采集方案管理 -->
+    <CollectionPlans v-model="planDialogVisible" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Monitor, Bell, CircleCheck, CircleClose } from '@element-plus/icons-vue'
+import { Monitor, Bell, CircleCheck, CircleClose, SetUp } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useOpcuaStore } from './store/opcua'
 import NodeTree from './components/NodeTree.vue'
 import DataDashboard from './components/DataDashboard.vue'
+import CollectionPlans from './components/CollectionPlans.vue'
 import type { AlarmEvent } from './types'
 
 const store = useOpcuaStore()
 const updateTimer = ref<number | null>(null)
+const planDialogVisible = ref(false)
 
 const criticalCount = computed(() =>
   store.alarms.filter(a => a.severity === 'Critical' && !a.acknowledged).length

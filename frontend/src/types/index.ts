@@ -36,7 +36,7 @@ export interface AlarmEvent {
   threshold?: number
 }
 
-// 订阅配置
+// 订阅配置（采集方案与单点订阅共用的参数结构）
 export interface SubscriptionConfig {
   nodeId: string
   publishingInterval: number
@@ -44,6 +44,57 @@ export interface SubscriptionConfig {
   queueSize: number
   discardOldest: boolean
   enabled: boolean
+  /** 参数来源：手动单点订阅，或来自某份采集方案 */
+  source: 'manual' | 'plan'
+  /** 来自采集方案时的方案 id */
+  planId?: string
+  /** 生效状态：已生效 / 节点连接异常，待生效 */
+  status?: 'applied' | 'pending'
+}
+
+// 采集方案中单个节点的配置项
+export interface PlanNodeConfig {
+  nodeId: string
+  samplingInterval: number
+  publishingInterval: number
+  queueSize: number
+}
+
+// 采集方案
+export interface CollectionPlan {
+  id: string
+  name: string
+  description?: string
+  configs: PlanNodeConfig[]
+  enabled: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+// 方案启用时单节点反馈
+export interface ApplyNodeResult {
+  nodeId: string
+  nodeName: string
+  applied: boolean
+  message: string
+  samplingInterval: number
+  publishingInterval: number
+  queueSize: number
+}
+
+// 方案启用结果：逐条反馈 + 连接异常待生效节点
+export interface ApplyResult {
+  success: boolean
+  appliedNodes: ApplyNodeResult[]
+  pendingNodeIds: string[]
+}
+
+// 保存校验错误：精确定位到哪个节点的哪一项
+export interface ValidationError {
+  nodeId: string
+  nodeName: string
+  field: 'samplingInterval' | 'publishingInterval' | 'queueSize'
+  message: string
 }
 
 // 历史数据点

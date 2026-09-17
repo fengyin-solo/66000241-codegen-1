@@ -8,7 +8,7 @@
 - **实时数据仪表盘** - 温度、压力、流量、阀门开度、电机转速、泵状态等工业参数实时展示
 - **数据趋势图表** - 基于 ECharts 的实时趋势曲线，支持历史数据回溯
 - **报警事件管理** - 自动检测超限报警，支持严重程度分级（严重/高/中/低/信息），报警确认与清除
-- **数据订阅管理** - 灵活配置数据采样间隔与发布周期
+- **节点采集方案** - 为多个节点分别设定采样周期、发布周期与队列上限，保存为可复用方案；统一取值范围校验（采样周期 50~60000ms、发布周期 100~300000ms、队列上限 1~100 条），任一项越界整份配置拒绝保存并定位到具体节点与参数；启用时按节点逐条反馈，连接异常节点单独列为待生效；方案与订阅共用同一份参数，单点订阅入口保持不变
 - **数据质量指示** - Good / Bad / Uncertain 三级质量码标识
 
 ## 技术栈
@@ -92,4 +92,14 @@ mvn spring-boot:run
 |------|------|------|
 | GET | `/api/nodes` | 获取所有 OPC-UA 节点 |
 | GET | `/api/nodes/{id}/value` | 获取指定节点当前值 |
-| POST | `/api/subscribe` | 订阅节点数据变更 |
+| GET | `/api/nodes/{id}/subscription` | 查询节点当前生效采集参数（含来源 manual/plan） |
+| POST | `/api/nodes/{id}/connectivity` | 设置节点连接状态（模拟连接异常/恢复） |
+| POST | `/api/subscribe` | 单点订阅节点数据变更（入口保持原样） |
+| DELETE | `/api/subscribe/{nodeId}` | 取消订阅 |
+| GET | `/api/collection/limits` | 获取采样周期/发布周期/队列上限统一取值范围 |
+| GET | `/api/collection/plans` | 采集方案列表（含覆盖节点与启用状态） |
+| POST | `/api/collection/plans` | 保存（新增/更新）采集方案；校验失败返回 400 及节点级错误 |
+| DELETE | `/api/collection/plans/{id}` | 删除方案 |
+| POST | `/api/collection/plans/{id}/enable` | 启用方案，返回逐节点反馈与待生效节点列表 |
+| POST | `/api/collection/plans/{id}/disable` | 停用方案 |
+| POST | `/api/collection/pending/retry` | 重试待生效节点（可按方案过滤） |

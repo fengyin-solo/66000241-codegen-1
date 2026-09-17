@@ -21,12 +21,48 @@ public class OpcuaClientService {
     private static final Logger log = LoggerFactory.getLogger(OpcuaClientService.class);
 
     private final Map<String, NodeModel> nodeCache = new ConcurrentHashMap<>();
-    private final Set<String> subscriptions = ConcurrentHashMap.newKeySet();
+    /** 采集配置与订阅共用同一份参数：nodeId -> 订阅记录 */
+    private final Map<String, SubscriptionRecord> subscriptions = new ConcurrentHashMap<>();
+    /** 模拟连接异常的节点 */
+    private final Set<String> unreachableNodes = ConcurrentHashMap.newKeySet();
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
     private final Random random = new Random();
 
     private boolean connected = false;
     private String serverUrl = "opc.tcp://localhost:4840";
+
+    /**
+     * 单条订阅记录：采样周期、发布周期、队列上限及生效状态
+     */
+    public static class SubscriptionRecord {
+        private final String nodeId;
+        private final int samplingInterval;
+        private final int publishingInterval;
+        private final int queueSize;
+        private final String source;      // manual / plan
+        private final String planId;
+        private volatile String status;  // applied / pending
+
+        public SubscriptionRecord(String nodeId, int samplingInterval, int publishingInterval,
+                                  int queueSize, String source, String planId, String status) {
+            this.nodeId = nodeId;
+            this.samplingInterval = samplingInterval;
+            this.publishingInterval = publishingInterval;
+            this.queueSize = queueSize;
+            this.source = source;
+            this.planId = planId;
+            this.status = status;
+        }
+
+        public String getNodeId() { return nodeId; }
+        public int getSamplingInterval() { return samplingInterval; }
+        public int getPublishingInterval() { return publishingInterval; }
+        public int getQueueSize() { return queueSize; }
+        public String getSource() { return source; }
+        public String getPlanId() { return planId; }
+        public String getStatus() { return status; }
+        public void setStatus(String status) { this.status = status; }
+    }
 
     @PostConstruct
     public void init() {
@@ -116,10 +152,18 @@ public class OpcuaClientService {
                 simulateValue("valve_position", 75.0, 5.0, "Double");
                 simulateValue("motor_speed", 1480, 30, "Int32");
 
+                // 连接异常的节点质量码置为 Bad
+                unreachableNodes.forEach(id -> {
+                    NodeModel node = nodeCache.get(id);
+                    if (node != null) {
+                        node.setQuality("Bad");
+                    }
+                });
+
                 // 偶尔翻转泵状态
                 if (random.nextDouble() > 0.98) {
                     NodeModel pump = nodeCache.get("pump_status");
-                    if (pump != null) {
+                    if (pump != null && !unreachableNodes.contains("pump_status")) {
                         pump.setValue(!(Boolean) pump.getValue());
                     }
                 }
@@ -131,7 +175,7 @@ public class OpcuaClientService {
 
     private void simulateValue(String nodeId, double baseValue, double range, String dataType) {
         NodeModel node = nodeCache.get(nodeId);
-        if (node != null && "Variable".equals(node.getType())) {
+        if (node != null && "Variable".equals(node.getType()) && !unreachableNodes.contains(nodeId)) {
             double variation = (random.nextDouble() - 0.5) * 2 * range;
             if ("Int32".equals(dataType)) {
                 node.setValue((int) (baseValue + variation));
@@ -155,12 +199,22 @@ public class OpcuaClientService {
     }
 
     /**
-     * 读取节点值
+     * 读取节点值（连接异常的节点不可读）
      */
     public DataValueModel readValue(String nodeId) {
         NodeModel node = nodeCache.get(nodeId);
         if (node == null || !"Variable".equals(node.getType())) {
             return null;
+        }
+        if (unreachableNodes.contains(nodeId)) {
+            DataValueModel dataValue = new DataValueModel();
+            dataValue.setNodeId(node.getNodeId());
+            dataValue.setValue(null);
+            dataValue.setQuality("Bad");
+            dataValue.setTimestamp(Instant.now());
+            dataValue.setSourceTimestamp(Instant.now());
+            dataValue.setServerTimestamp(Instant.now());
+            return dataValue;
         }
 
         DataValueModel dataValue = new DataValueModel();
@@ -174,15 +228,27 @@ public class OpcuaClientService {
     }
 
     /**
-     * 订阅节点
+     * 订阅节点（保持原有签名兼容，使用默认队列上限、手动来源）
      */
     public boolean subscribe(String nodeId, int publishingInterval, int samplingInterval) {
+        return subscribe(nodeId, publishingInterval, samplingInterval, 10, "manual", null);
+    }
+
+    /**
+     * 订阅节点（采集配置与单点订阅共用同一套参数）
+     * 连接异常的节点同样登记，但状态标记为待生效（pending）
+     */
+    public boolean subscribe(String nodeId, int publishingInterval, int samplingInterval,
+                             int queueSize, String source, String planId) {
         if (!nodeCache.containsKey(nodeId)) {
             log.warn("订阅失败：节点 {} 不存在", nodeId);
             return false;
         }
-        subscriptions.add(nodeId);
-        log.info("已订阅节点: {}, 发布间隔: {}ms, 采样间隔: {}ms", nodeId, publishingInterval, samplingInterval);
+        String status = unreachableNodes.contains(nodeId) ? "pending" : "applied";
+        subscriptions.put(nodeId, new SubscriptionRecord(
+                nodeId, samplingInterval, publishingInterval, queueSize, source, planId, status));
+        log.info("已订阅节点: {}, 采样间隔: {}ms, 发布间隔: {}ms, 队列上限: {}, 状态: {}",
+                nodeId, samplingInterval, publishingInterval, queueSize, status);
         return true;
     }
 
@@ -190,11 +256,96 @@ public class OpcuaClientService {
      * 取消订阅
      */
     public boolean unsubscribe(String nodeId) {
-        boolean removed = subscriptions.remove(nodeId);
-        if (removed) {
+        SubscriptionRecord removed = subscriptions.remove(nodeId);
+        if (removed != null) {
             log.info("已取消订阅节点: {}", nodeId);
         }
-        return removed;
+        return removed != null;
+    }
+
+    /**
+     * 查询节点当前生效的采集参数（配置与订阅共用）
+     */
+    public SubscriptionRecord getSubscription(String nodeId) {
+        return subscriptions.get(nodeId);
+    }
+
+    /**
+     * 节点是否可连接
+     */
+    public boolean isNodeReachable(String nodeId) {
+        return !unreachableNodes.contains(nodeId);
+    }
+
+    public Set<String> getUnreachableNodes() {
+        return Collections.unmodifiableSet(unreachableNodes);
+    }
+
+    /**
+     * 设置节点连接状态（模拟）：恢复连接时返回转为已生效的节点
+     */
+    public List<String> setNodeConnectivity(String nodeId, boolean reachable) {
+        List<String> applied = new ArrayList<>();
+        if (reachable) {
+            unreachableNodes.remove(nodeId);
+            NodeModel node = nodeCache.get(nodeId);
+            if (node != null) {
+                node.setQuality("Good");
+            }
+            SubscriptionRecord record = subscriptions.get(nodeId);
+            if (record != null && "pending".equals(record.getStatus())) {
+                record.setStatus("applied");
+                applied.add(nodeId);
+            }
+        } else {
+            unreachableNodes.add(nodeId);
+            NodeModel node = nodeCache.get(nodeId);
+            if (node != null) {
+                node.setQuality("Bad");
+            }
+            SubscriptionRecord record = subscriptions.get(nodeId);
+            if (record != null) {
+                record.setStatus("pending");
+            }
+        }
+        return applied;
+    }
+
+    /**
+     * 重试待生效节点（可限定方案），返回本次转为已生效的节点 id
+     */
+    public List<String> retryPending(String planId) {
+        List<String> applied = new ArrayList<>();
+        subscriptions.forEach((nodeId, record) -> {
+            if (!"pending".equals(record.getStatus())) {
+                return;
+            }
+            if (planId != null && !planId.equals(record.getPlanId())) {
+                return;
+            }
+            if (!unreachableNodes.contains(nodeId)) {
+                record.setStatus("applied");
+                applied.add(nodeId);
+            }
+        });
+        return applied;
+    }
+
+    /**
+     * 某来源（采集方案）写入的全部订阅
+     */
+    public Collection<SubscriptionRecord> getSubscriptionsByPlan(String planId) {
+        List<SubscriptionRecord> result = new ArrayList<>();
+        subscriptions.values().forEach(record -> {
+            if ("plan".equals(record.getSource()) && planId.equals(record.getPlanId())) {
+                result.add(record);
+            }
+        });
+        return result;
+    }
+
+    public NodeModel getNode(String nodeId) {
+        return nodeCache.get(nodeId);
     }
 
     public boolean isConnected() {
